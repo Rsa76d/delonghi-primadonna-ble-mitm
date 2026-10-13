@@ -1,0 +1,19 @@
+alias: Тривога на матриці
+triggers:
+  - trigger: state
+    entity_id:
+      - binary_sensor.jaam_546ec0c40a24_red_alert_level
+      - binary_sensor.jaam_546ec0c40a24_yellow_alert_level
+    to: 'on'
+actions:
+  - action: rest_command.wled_alarm
+  - delay:
+      seconds: 20
+  - action: automation.trigger
+    target:
+      entity_id:
+        - automation.pogoda_povne_keruvannia
+        - automation.kavovi_animatsii_na_matritsi
+    data:
+      skip_condition: true
+mode: single

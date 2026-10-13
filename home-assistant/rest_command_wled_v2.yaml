@@ -1,0 +1,88 @@
+rest_command:
+  wled_cup_outline:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: '{"seg":{"i":[52,53,"808080",59,60,"808080",68,69,"808080",75,76,"808080",84,85,"808080",91,92,"808080",100,101,"808080",107,108,"808080",116,117,"808080",123,124,"808080",132,133,"808080",139,140,"808080",148,149,"808080",155,156,"808080",164,165,"808080",171,172,"808080",180,181,"808080",187,188,"808080",180,188,"808080",92,93,"808080",140,141,"808080",109,110,"808080",125,126,"808080",211,221,"808080",225,239,"808080"]}}'
+  wled_cup_image:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {% set rounded = ((pct | int / 10) | round(0)) * 10 %}
+      {% set preset = 2 + (rounded / 10) | int %}
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":{{ preset }}}
+  wled_warmup:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":1}
+  wled_ready:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":13}
+  wled_clear:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: '{"on":false}'
+  wled_on:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: '{"on":true}'
+  wled_water:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":14}
+  wled_grounds:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":15}
+  wled_beans:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":16}
+  wled_weather:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {% set red = is_state('binary_sensor.jaam_546ec0c40a24_red_alert_level', 'on') %}
+      {% set yellow = is_state('binary_sensor.jaam_546ec0c40a24_yellow_alert_level', 'on') %}
+      {% set cycle_pos = (now().minute * 60 + now().second) % 90 %}
+      {% set alarm_tick = (red or yellow) and cycle_pos >= 60 %}
+      {% if alarm_tick %}
+        {% set txt = 'TRYVOHA' %}
+        {% if red %}
+          {% set r = 255 %}{% set g = 0 %}{% set b = 0 %}
+        {% else %}
+          {% set r = 255 %}{% set g = 200 %}{% set b = 0 %}
+        {% endif %}
+      {% else %}
+        {% set txt = '#HHMM ' ~ '#DATE ' ~ states('sensor.tasmota_ds18b20_2_temperature') ~ 'C ' ~ states('sensor.ecowitt_outdoor_humidity_14') ~ '% ' ~ states('sensor.tasmota_bme280_pressure') ~ 'hPa' %}
+        {% set hexcol = states('input_text.kolir_pogodi') %}
+        {% if hexcol in ['unknown','unavailable',''] %}{% set hexcol = 'FFC18D' %}{% endif %}
+        {% set r = hexcol[0:2] | int(255,16) %}
+        {% set g = hexcol[2:4] | int(193,16) %}
+        {% set b = hexcol[4:6] | int(141,16) %}
+      {% endif %}
+      {% set raw = states('input_number.iaskravist_pogodi')|int(153) %}
+      {% set gamma = 2.5 %}
+      {% set bri_final = [1, 255 * (raw / 255) ** gamma] | max | round(0) | int %}
+      {"bri":{{ bri_final }},"transition":0,"seg":[{"start":0,"stop":16,"startY":0,"stopY":16,"fx":122,"pal":0,"sx":{{ states('input_number.shvidkist_pogodi')|int(128) }},"ix":{{ states('input_number.pozitsiia_pogodi')|int(154) }},"c1":0,"c2":129,"c3":17,"col":[[{{r}},{{g}},{{b}}]],"n":"{{ txt }}"}]}
+  wled_alarm:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_pogodi')|int(153) }},"ps":17}

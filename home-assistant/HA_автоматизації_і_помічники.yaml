@@ -1,0 +1,482 @@
+# ============================================================
+# DeLonghi BLE MITM + WLED — повний набір автоматизацій, 
+# помічників (helpers) і rest_command для Home Assistant
+# Станом на: серпень 2026, прошивка v4.15
+# ============================================================
+#
+# ПРИМІТКА: HA транслітерує українські назви сутностей 
+# непередбачувано — після створення помічника ЗАВЖДИ перевіряй 
+# реальний entity_id через Інструменти розробника → Стан.
+
+# ============================================================
+# 1. REST COMMANDS (у configuration.yaml)
+# ============================================================
+rest_command:
+  wled_cup_outline:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: '{"seg":{"i":[52,53,"808080",59,60,"808080",68,69,"808080",75,76,"808080",84,85,"808080",91,92,"808080",100,101,"808080",107,108,"808080",116,117,"808080",123,124,"808080",132,133,"808080",139,140,"808080",148,149,"808080",155,156,"808080",164,165,"808080",171,172,"808080",180,181,"808080",187,188,"808080",180,188,"808080",92,93,"808080",140,141,"808080",109,110,"808080",125,126,"808080",211,221,"808080",225,239,"808080"]}}'
+  wled_cup_image:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {% set rounded = ((pct | int / 10) | round(0)) * 10 %}
+      {% set preset = 2 + (rounded / 10) | int %}
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":{{ preset }}}
+  wled_warmup:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":1}
+  wled_ready:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":13}
+  wled_clear:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: '{"on":false}'
+  wled_on:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: '{"on":true}'
+  wled_water:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":14}
+  wled_grounds:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":15}
+  wled_beans:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {"on":true,"bri":{{ states('input_number.iaskravist_kavi')|int(200) }},"ps":16}
+  wled_weather:
+    url: "http://192.168.0.22/json/state"
+    method: POST
+    content_type: "application/json"
+    payload: >
+      {% set idx = states('input_number.indeks_pogodi')|int(0) %}
+      {% if idx == 0 %}{% set txt = '#HHMM' %}
+      {% elif idx == 1 %}{% set txt = '#DATE' %}
+      {% elif idx == 2 %}{% set txt = states('sensor.tasmota_ds18b20_2_temperature') ~ 'C' %}
+      {% elif idx == 3 %}{% set txt = states('sensor.ecowitt_outdoor_humidity_14') ~ '%' %}
+      {% else %}{% set txt = states('sensor.tasmota_bme280_pressure') ~ 'hPa' %}
+      {% endif %}
+      {% set hexcol = states('input_text.kolir_pogodi') %}
+      {% if hexcol in ['unknown','unavailable',''] %}{% set hexcol = 'FFC18D' %}{% endif %}
+      {% set r = hexcol[0:2] | int(255,16) %}
+      {% set g = hexcol[2:4] | int(193,16) %}
+      {% set b = hexcol[4:6] | int(141,16) %}
+      {% set raw = states('input_number.iaskravist_pogodi')|int(153) %}
+      {% set gamma = 2.5 %}
+      {% set bri_final = [1, 255 * (raw / 255) ** gamma] | max | round(0) | int %}
+      {"bri":{{ bri_final }},"transition":0,"seg":[{"start":0,"stop":16,"startY":0,"stopY":16,"fx":122,"pal":0,"sx":{{ states('input_number.shvidkist_pogodi')|int(128) }},"ix":{{ states('input_number.pozitsiia_pogodi')|int(154) }},"c1":0,"c2":129,"c3":17,"col":[[{{r}},{{g}},{{b}}]],"n":"{{ txt }}"}]}
+
+# ============================================================
+# 2. MQTT-СЕНСОР для попереджень (у configuration.yaml, блок mqtt:)
+# ============================================================
+mqtt:
+  sensor:
+    - name: "Тип попередження кавомашини"
+      unique_id: delonghi_attention_type
+      state_topic: "delonghi/attention_type"
+
+# ============================================================
+# 3. ГОЛОВНА АВТОМАТИЗАЦІЯ — "Погода — повне керування"
+# ============================================================
+# НЮАНС: "Прогрів на матриці" / "Вимкнути матрицю після прогріву" (нижче)
+# реагують на стан кавомашини (waking/ready/asleep) НЕЗАЛЕЖНО від того,
+# темно зараз чи ні — вони не перевіряють нічний режим. Тобто якщо ця
+# автоматизація щойно вимкнула матрицю (темно+3h+кухня off), а потім хтось
+# вмикає кавомашину, матриця коротко "оживе" (двічі: на ready і на asleep).
+# Це НЕ баг і не залишається назавжди: тік нижче (trigger: time_pattern,
+# minutes: "/1") перераховує "чи має бути видно" з нуля щохвилини, тож якщо
+# умова темно+3h+кухня-off усе ще виконується — матриця сама вимкнеться
+# максимум протягом ~1 хвилини після того, як кавові автоматизації її
+# розбудили.
+- alias: "Погода — повне керування"
+  triggers:
+    - trigger: time_pattern
+      minutes: "/1"
+      id: tick
+    - trigger: state
+      entity_id: sensor.tasmota_bh1750_illuminance
+      id: lux
+    - trigger: state
+      entity_id: switch.kukhnia_switch_1
+      id: kitchen
+    - trigger: state
+      entity_id: input_number.iaskravist_pogodi
+      id: other
+    - trigger: state
+      entity_id: input_number.pozitsiia_pogodi
+      id: other
+    - trigger: state
+      entity_id: input_number.shvidkist_pogodi
+      id: other
+    - trigger: state
+      entity_id: input_text.kolir_pogodi
+      id: other
+    - trigger: state
+      entity_id: input_boolean.pokazati_pogodu
+      id: other
+  conditions:
+    - condition: or
+      conditions:
+        - condition: state
+          entity_id: sensor.delonghi_primadonna_stan_kavomashini
+          state: "asleep"
+        - condition: state
+          entity_id: input_boolean.pokazati_pogodu
+          state: "on"
+  actions:
+    - if:
+        - condition: trigger
+          id: lux
+      then:
+        - action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.ruchne_vimknennia_matritsi
+    - if:
+        - condition: trigger
+          id: other
+        - condition: template
+          value_template: "{{ trigger.entity_id == 'input_number.iaskravist_pogodi' }}"
+      then:
+        - action: input_boolean.turn_off
+          target:
+            entity_id: input_boolean.avtoiaskravist_pogodi
+    - variables:
+        is_dark: "{{ is_state('binary_sensor.gostinaia_tasmota_temno_na_dvori', 'on') }}"
+        kitchen_on: "{{ is_state('switch.kukhnia_switch_1', 'on') }}"
+        forced: "{{ is_state('input_boolean.pokazati_pogodu', 'on') }}"
+        moment_ts: "{{ (states('input_datetime.moment_temriavi') | as_datetime | as_timestamp) | default(as_timestamp(now())) }}"
+        elapsed: "{{ as_timestamp(now()) - moment_ts }}"
+        should_show: "{{ ((not is_dark) or kitchen_on or forced or (elapsed < 10800)) and not is_state('input_boolean.ruchne_vimknennia_matritsi', 'on') }}"
+    - if:
+        - condition: state
+          entity_id: input_boolean.avtoiaskravist_pogodi
+          state: "on"
+      then:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.iaskravist_pogodi
+          data:
+            value: >
+              {% set lux = states('sensor.tasmota_bh1750_illuminance') | float(20) %}
+              {% set lux_min = states('input_number.minimum_liuks_pogodi')|float(1) %}
+              {% set lux_max = states('input_number.maksimum_liuks_pogodi')|float(2000) %}
+              {% set lux_c = [lux_min, [lux_max, lux] | min] | max %}
+              {% set raw_bri = 1 + (lux_c - lux_min) / (lux_max - lux_min) * (255 - 1) %}
+              {% set cap_pct = states('input_number.obmezhennia_iaskravosti_pogodi')|float(100) %}
+              {% set cap_bri = (cap_pct / 100) * 255 %}
+              {% set result = [raw_bri, cap_bri] | min %}
+              {% if kitchen_on %}{% set result = [result, 76] | max %}{% endif %}
+              {{ result | round(0) | int }}
+    - if:
+        - condition: state
+          entity_id: input_boolean.avtoiaskravist_pogodi
+          state: "off"
+        - condition: trigger
+          id: kitchen
+      then:
+        - choose:
+            - conditions:
+                - condition: state
+                  entity_id: switch.kukhnia_switch_1
+                  state: "on"
+              sequence:
+                - action: input_number.set_value
+                  target:
+                    entity_id: input_number.iaskravist_do_kukhni
+                  data:
+                    value: "{{ states('input_number.iaskravist_pogodi')|int(200) }}"
+                - action: input_number.set_value
+                  target:
+                    entity_id: input_number.iaskravist_pogodi
+                  data:
+                    value: "{{ [states('input_number.iaskravist_pogodi')|int(200), 76] | max }}"
+            - conditions:
+                - condition: state
+                  entity_id: switch.kukhnia_switch_1
+                  state: "off"
+              sequence:
+                - action: input_number.set_value
+                  target:
+                    entity_id: input_number.iaskravist_pogodi
+                  data:
+                    value: "{{ states('input_number.iaskravist_do_kukhni')|int(200) }}"
+    - if:
+        - condition: template
+          value_template: "{{ not should_show }}"
+      then:
+        - action: rest_command.wled_clear
+        - stop: "матриця вимкнена"
+    - if:
+        - condition: trigger
+          id: tick
+      then:
+        - action: input_number.set_value
+          target:
+            entity_id: input_number.indeks_pogodi
+          data:
+            value: "{{ (states('input_number.indeks_pogodi')|int(0) + 1) % 5 }}"
+    - action: rest_command.wled_on
+    - delay:
+        milliseconds: 500
+    - action: rest_command.wled_weather
+
+# ============================================================
+# 4. "Примусова погода вимкнена — відновити режим"
+# ============================================================
+- alias: "Примусова погода вимкнена — відновити режим"
+  triggers:
+    - trigger: state
+      entity_id: input_boolean.pokazati_pogodu
+      to: "off"
+  conditions:
+    - condition: not
+      conditions:
+        - condition: state
+          entity_id: sensor.delonghi_primadonna_stan_kavomashini
+          state: "asleep"
+  actions:
+    - choose:
+        - conditions:
+            - condition: state
+              entity_id: sensor.delonghi_primadonna_stan_kavomashini
+              state: "waking"
+          sequence:
+            - action: rest_command.wled_warmup
+        - conditions:
+            - condition: state
+              entity_id: sensor.delonghi_primadonna_stan_kavomashini
+              state: "ready"
+          sequence:
+            - action: rest_command.wled_ready
+
+# ============================================================
+# 5. "Прогрів на матриці"
+# ============================================================
+- alias: "Прогрів на матриці"
+  triggers:
+    - trigger: mqtt
+      topic: delonghi/state
+      payload: waking
+  actions:
+    - action: rest_command.wled_warmup
+
+# ============================================================
+# 6. "Вимкнути матрицю після прогріву"
+# ============================================================
+- alias: "Вимкнути матрицю після прогріву"
+  triggers:
+    - trigger: state
+      entity_id: sensor.delonghi_primadonna_stan_kavomashini
+      to: "ready"
+    - trigger: state
+      entity_id: sensor.delonghi_primadonna_stan_kavomashini
+      to: "asleep"
+  actions:
+    - action: rest_command.wled_ready
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.pokazati_pogodu
+
+# ============================================================
+# 7. "Кавова чашка на матриці"
+# ============================================================
+- alias: "Кавова чашка на матриці"
+  mode: restart
+  triggers:
+    - trigger: mqtt
+      topic: delonghi/brew_progress
+  conditions:
+    - condition: state
+      entity_id: sensor.tip_poperedzhennia_kavomashini
+      state: ""
+  actions:
+    - action: rest_command.wled_cup_image
+      data:
+        pct: "{{ trigger.payload }}"
+    - delay:
+        minutes: 4
+    - action: rest_command.wled_ready
+
+# ============================================================
+# 8. "Попередження на матриці"
+# ============================================================
+- alias: "Попередження на матриці"
+  triggers:
+    - trigger: mqtt
+      topic: delonghi/attention_type
+  conditions:
+    - condition: not
+      conditions:
+        - condition: state
+          entity_id: sensor.delonghi_primadonna_stan_kavomashini
+          state: "asleep"
+  actions:
+    - choose:
+        - conditions:
+            - condition: template
+              value_template: "{{ trigger.payload == 'water' }}"
+          sequence:
+            - action: rest_command.wled_water
+        - conditions:
+            - condition: template
+              value_template: "{{ trigger.payload == 'grounds' }}"
+          sequence:
+            - action: rest_command.wled_grounds
+        - conditions:
+            - condition: template
+              value_template: "{{ trigger.payload == 'beans' }}"
+          sequence:
+            - action: rest_command.wled_beans
+      default:
+        - action: rest_command.wled_ready
+
+# ============================================================
+# 9. СКРИПТИ (script.yaml)
+# ============================================================
+uvimknuti_matritsiu:
+  alias: "Увімкнути матрицю"
+  sequence:
+    - action: input_boolean.turn_off
+      target:
+        entity_id: input_boolean.ruchne_vimknennia_matritsi
+    - action: rest_command.wled_on
+
+vimknuti_matritsiu:
+  alias: "Вимкнути матрицю"
+  sequence:
+    - action: input_boolean.turn_on
+      target:
+        entity_id: input_boolean.ruchne_vimknennia_matritsi
+    - action: rest_command.wled_clear
+
+# ============================================================
+# 10. ПОМІЧНИКИ (Helpers) — створити вручну через UI
+# ============================================================
+# Налаштування → Пристрої та сервіси → Помічники → "+"
+#
+# Input Number:
+#   iaskravist_pogodi        (Яскравість погоди)      0-255, min крок 1
+#   pozitsiia_pogodi         (Позиція погоди)          відповідає "ix" WLED
+#   shvidkist_pogodi         (Швидкість погоди)        відповідає "sx" WLED
+#   minimum_liuks_pogodi     (Мінімум люкс)            за замовч. 1
+#   maksimum_liuks_pogodi    (Максимум люкс)           за замовч. 2000
+#   obmezhennia_iaskravosti_pogodi (Обмеження яскравості) 30-100%
+#   iaskravist_kavi          (Яскравість кави)         0-255, окремо від погоди
+#   indeks_pogodi            (Індекс погоди)           0-4
+#   iaskravist_do_kukhni     (Яскравість до кухні)     Box (поле введення), НЕ повзунок
+#
+# Input Text:
+#   kolir_pogodi              (Колір погоди)           HEX-рядок
+#
+# Input Boolean:
+#   avtoiaskravist_pogodi     (Авторахунок яскравості)
+#   pokazati_pogodu           (Примусова погода)
+#   ruchne_vimknennia_matritsi (Ручне вимкнення матриці)
+#
+# Input Datetime:
+#   moment_temriavi           (Момент темряви)          дата+час, вкл. час
+#
+# Template Light (у блоці template: у configuration.yaml):
+- light:
+    - name: "Колір погоди (пікер)"
+      unique_id: kolir_pogody
+      level: "{{ states('input_number.iaskravist_pogodi') | int(153) }}"
+      turn_on:
+        - service: input_text.set_value
+          target:
+            entity_id: input_text.kolir_pogodi
+          data:
+            value: "FFC18D"
+      turn_off:
+        - service: input_text.set_value
+          target:
+            entity_id: input_text.kolir_pogodi
+          data:
+            value: "000000"
+      set_rgb:
+        - service: input_text.set_value
+          target:
+            entity_id: input_text.kolir_pogodi
+          data:
+            value: "{{ '%02x%02x%02x' % (rgb[0], rgb[1], rgb[2]) }}"
+      set_level:
+        - service: input_number.set_value
+          target:
+            entity_id: input_number.iaskravist_pogodi
+          data:
+            value: "{{ brightness }}"
+      state: "on"
+
+# Template Sensor (у тому самому блоці template:):
+- sensor:
+    - name: "Відлік погоди"
+      unique_id: vidlik_pogody
+      state: >
+        {% if states('binary_sensor.gostinaia_tasmota_temno_na_dvori') == 'off' %}
+          Світло (день)
+        {% else %}
+          {% set moment_ts = (states('input_datetime.moment_temriavi') | as_datetime | as_timestamp) | default(as_timestamp(now())) %}
+          {% set elapsed = as_timestamp(now()) - moment_ts %}
+          {% set remaining = 10800 - elapsed %}
+          {% if remaining > 0 %}
+            Залишилось {{ (remaining / 60) | round(0) }} хв
+          {% else %}
+            Вимкнено (>3год темряви)
+          {% endif %}
+        {% endif %}
+    - name: "Прогрес відліку погоди"
+      unique_id: progres_vidliku_pogodi
+      unit_of_measurement: "%"
+      state: >
+        {% if states('binary_sensor.gostinaia_tasmota_temno_na_dvori') == 'off' %}
+          100
+        {% else %}
+          {% set moment_ts = (states('input_datetime.moment_temriavi') | as_datetime | as_timestamp) | default(as_timestamp(now())) %}
+          {% set elapsed = as_timestamp(now()) - moment_ts %}
+          {% set pct = ((10800 - elapsed) / 10800 * 100) | round(0) | int %}
+          {{ [0, [100, pct] | min] | max }}
+        {% endif %}
+
+# Threshold Binary Sensor "Темно на дворі" — створюється через UI:
+#   Помічники → "+" → Threshold
+#   Сутність: sensor.tasmota_bh1750_illuminance (чи ваш датчик люксів)
+#   Тип: range
+#   Нижня межа: -1  (НЕ 0! точний нуль люкс інакше не потрапляє в діапазон)
+#   Верхня межа: 20
+
+# ============================================================
+# 11. АВТОМАТИЗАЦІЯ "Запамятати момент темряви" — ОКРЕМА, важлива!
+# ============================================================
+- alias: "Запамятати момент темряви"
+  triggers:
+    - trigger: state
+      entity_id: binary_sensor.gostinaia_tasmota_temno_na_dvori
+      from: "off"
+      to: "on"
+  actions:
+    - action: input_datetime.set_datetime
+      target:
+        entity_id: input_datetime.moment_temriavi
+      data:
+        timestamp: "{{ now().timestamp() }}"
