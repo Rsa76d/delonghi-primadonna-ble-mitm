@@ -140,7 +140,8 @@ mqtt:
       conditions:
         - condition: state
           entity_id: sensor.delonghi_primadonna_stan_kavomashini
-          state: "asleep"
+          # 2026-11-09: додано offline — інакше при втраті зв'язку лишається остання картинка (зелена чашка)
+          state: ["asleep", "offline"]
         - condition: state
           entity_id: input_boolean.pokazati_pogodu
           state: "on"
